@@ -21,17 +21,10 @@ public class LeadEngineService {
             EnrichmentService enrichmentService,
             NotionService notionService) {
 
-        this.overpassService =
-                overpassService;
-
-        this.websiteDiscoveryService =
-                websiteDiscoveryService;
-
-        this.enrichmentService =
-                enrichmentService;
-
-        this.notionService =
-                notionService;
+        this.overpassService = overpassService;
+        this.websiteDiscoveryService = websiteDiscoveryService;
+        this.enrichmentService = enrichmentService;
+        this.notionService = notionService;
     }
 
     public List<Lead> run(
@@ -44,51 +37,101 @@ public class LeadEngineService {
         System.out.println("Industry : " + industry);
         System.out.println("================================");
 
-        List<Lead> leads =
-                overpassService.discover(
-                        industry,
-                        city
-                );
+        /*
+         * STEP 1
+         * Try Overpass first.
+         *
+         * If Overpass fails, DO NOT stop the application.
+         */
+        List<Lead> leads = new ArrayList<>();
 
-        System.out.println(
-                "📦 Discovery result: " +
-                        leads.size()
-        );
+        try {
 
-        if (leads.isEmpty()) {
-
-            System.out.println(
-                    "⚠️ No leads found."
+            leads.addAll(
+                    overpassService.discover(
+                            industry,
+                            city
+                    )
             );
 
-            return new ArrayList<>();
+            System.out.println(
+                    "🗺️ Overpass leads: " +
+                            leads.size()
+            );
+
+        } catch (Exception e) {
+
+            System.out.println(
+                    "⚠️ Overpass unavailable."
+            );
+
+            System.out.println(
+                    "⚠️ Reason: " +
+                            e.getMessage()
+            );
         }
 
-        leads =
-                websiteDiscoveryService
-                        .discoverWebsites(
-                                leads,
-                                city
-                        );
+        /*
+         * STEP 2
+         * Tavily discovery.
+         *
+         * This works even when Overpass fails.
+         */
+        try {
 
-        leads =
-                enrichmentService
-                        .enrich(leads);
+            leads =
+                    websiteDiscoveryService
+                            .discoverBusinesses(
+                                    leads,
+                                    city,
+                                    industry
+                            );
+
+            System.out.println(
+                    "🌐 After Tavily discovery: " +
+                            leads.size()
+            );
+
+        } catch (Exception e) {
+
+            System.out.println(
+                    "⚠️ Tavily discovery failed: " +
+                            e.getMessage()
+            );
+        }
 
         /*
+         * STEP 3
+         * Enrichment + scoring
+         */
+        if (!leads.isEmpty()) {
+
+            leads =
+                    enrichmentService.enrich(
+                            leads
+                    );
+        }
+
+        /*
+         * STEP 4
          * IMPORTANT:
-         * Always create mutable ArrayList.
-         * This avoids ImmutableCollections.uoe.
+         * Make mutable list before sorting.
          */
         List<Lead> sortedLeads =
                 new ArrayList<>(leads);
 
         sortedLeads.sort(
-                Comparator.comparingDouble(
-                        Lead::getHfFitScore
-                ).reversed()
+                Comparator
+                        .comparingDouble(
+                                Lead::getHfFitScore
+                        )
+                        .reversed()
         );
 
+        /*
+         * STEP 5
+         * Notion is optional.
+         */
         try {
 
             notionService.saveLeads(
@@ -103,10 +146,12 @@ public class LeadEngineService {
             );
         }
 
+        System.out.println("================================");
         System.out.println(
                 "✅ FINAL LEADS: " +
                         sortedLeads.size()
         );
+        System.out.println("================================");
 
         return sortedLeads;
     }

@@ -10,8 +10,9 @@ import org.springframework.web.client.RestTemplate;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.regex.Pattern;
+import java.util.Set;
 
 @Service
 public class OverpassService {
@@ -33,29 +34,64 @@ public class OverpassService {
         this.mapper = mapper;
     }
 
-    public List<Lead> discover(String industry, String city) {
+    public List<Lead> discover(
+            String industry,
+            String city) {
 
-        if (industry == null || industry.isBlank()) {
-            throw new IllegalArgumentException("Industry is required");
+        if (industry == null ||
+                industry.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Industry is required"
+            );
         }
 
-        if (city == null || city.isBlank()) {
-            throw new IllegalArgumentException("City is required");
+        if (city == null ||
+                city.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "City is required"
+            );
         }
 
-        System.out.println("====================================");
-        System.out.println("🔎 LEAD DISCOVERY STARTED");
-        System.out.println("🏙️ City     : " + city);
-        System.out.println("🏢 Industry : " + industry);
-        System.out.println("====================================");
-
-        double[] coordinates = getCoordinates(city);
-
-        String query = buildQuery(
-                industry,
-                coordinates[0],
-                coordinates[1]
+        System.out.println(
+                "===================================="
         );
+
+        System.out.println(
+                "🔎 OVERPASS DISCOVERY"
+        );
+
+        System.out.println(
+                "🏙️ City     : " + city
+        );
+
+        System.out.println(
+                "🏢 Industry : " + industry
+        );
+
+        System.out.println(
+                "===================================="
+        );
+
+        double[] coordinates =
+                getCoordinates(city);
+
+        String filter =
+                getFilter(industry);
+
+        String query =
+                """
+                [out:json][timeout:20];
+                (
+                  nwr(around:8000,%s,%s)%s;
+                );
+                out center tags;
+                """.formatted(
+                        coordinates[0],
+                        coordinates[1],
+                        filter
+                );
 
         Exception lastException = null;
 
@@ -63,7 +99,10 @@ public class OverpassService {
 
             try {
 
-                System.out.println("🌍 Trying Overpass: " + server);
+                System.out.println(
+                        "🌍 Trying Overpass: " +
+                                server
+                );
 
                 List<Lead> leads =
                         executeQuery(
@@ -79,9 +118,7 @@ public class OverpassService {
                                 " leads"
                 );
 
-                if (!leads.isEmpty()) {
-                    return leads;
-                }
+                return leads;
 
             } catch (Exception e) {
 
@@ -96,30 +133,9 @@ public class OverpassService {
             }
         }
 
-        System.out.println(
-                "⚠️ All Overpass servers failed or returned no leads."
-        );
-
-        return new ArrayList<>();
-    }
-
-    private String buildQuery(
-            String industry,
-            double latitude,
-            double longitude) {
-
-        String filters = getFilters(industry);
-
-        return """
-                [out:json][timeout:25];
-                (
-                  nwr(around:8000,%s,%s)%s;
-                );
-                out center tags;
-                """.formatted(
-                latitude,
-                longitude,
-                filters
+        throw new RuntimeException(
+                "All Overpass servers failed",
+                lastException
         );
     }
 
@@ -129,7 +145,8 @@ public class OverpassService {
             String city,
             String industry) {
 
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers =
+                new HttpHeaders();
 
         headers.setContentType(
                 MediaType.APPLICATION_FORM_URLENCODED
@@ -148,7 +165,10 @@ public class OverpassService {
                         );
 
         HttpEntity<String> request =
-                new HttpEntity<>(body, headers);
+                new HttpEntity<>(
+                        body,
+                        headers
+                );
 
         ResponseEntity<String> response =
                 restTemplate.postForEntity(
@@ -157,20 +177,24 @@ public class OverpassService {
                         String.class
                 );
 
-        if (!response.getStatusCode().is2xxSuccessful()) {
+        if (!response.getStatusCode()
+                .is2xxSuccessful()) {
+
             throw new RuntimeException(
-                    "HTTP status: " +
-                            response.getStatusCode().value()
+                    "HTTP " +
+                            response.getStatusCode()
+                                    .value()
             );
         }
 
-        String responseBody = response.getBody();
+        String responseBody =
+                response.getBody();
 
         if (responseBody == null ||
                 responseBody.isBlank()) {
 
             throw new RuntimeException(
-                    "Empty Overpass response"
+                    "Empty response"
             );
         }
 
@@ -182,16 +206,17 @@ public class OverpassService {
     }
 
     private List<Lead> parseResponse(
-            String responseBody,
+            String body,
             String city,
             String industry) {
 
-        List<Lead> leads = new ArrayList<>();
+        List<Lead> leads =
+                new ArrayList<>();
 
         try {
 
             JsonNode root =
-                    mapper.readTree(responseBody);
+                    mapper.readTree(body);
 
             JsonNode elements =
                     root.path("elements");
@@ -200,7 +225,8 @@ public class OverpassService {
                 return leads;
             }
 
-            for (JsonNode element : elements) {
+            for (JsonNode element :
+                    elements) {
 
                 JsonNode tags =
                         element.path("tags");
@@ -210,39 +236,71 @@ public class OverpassService {
 
                 if (name == null ||
                         name.isBlank()) {
+
                     continue;
                 }
 
-                Lead lead = new Lead();
+                Lead lead =
+                        new Lead();
 
                 lead.setBusiness(name);
+
                 lead.setCategory(
-                        industry.trim().toLowerCase()
+                        industry
+                                .trim()
+                                .toLowerCase()
                 );
+
                 lead.setLocation(city);
-                lead.setSource("OpenStreetMap");
 
-                lead.setWebsite(first(
-                        tag(tags, "website"),
-                        tag(tags, "contact:website"),
-                        tag(tags, "url")
-                ));
+                lead.setSource(
+                        "OpenStreetMap"
+                );
 
-                lead.setEmail(first(
-                        tag(tags, "email"),
-                        tag(tags, "contact:email")
-                ));
+                lead.setWebsite(
+                        first(
+                                tag(tags, "website"),
+                                tag(
+                                        tags,
+                                        "contact:website"
+                                ),
+                                tag(tags, "url")
+                        )
+                );
 
-                lead.setPhone(first(
-                        tag(tags, "phone"),
-                        tag(tags, "contact:phone"),
-                        tag(tags, "mobile")
-                ));
+                lead.setEmail(
+                        first(
+                                tag(tags, "email"),
+                                tag(
+                                        tags,
+                                        "contact:email"
+                                )
+                        )
+                );
 
-                lead.setInstagram(first(
-                        tag(tags, "instagram"),
-                        tag(tags, "contact:instagram")
-                ));
+                lead.setPhone(
+                        first(
+                                tag(tags, "phone"),
+                                tag(
+                                        tags,
+                                        "contact:phone"
+                                ),
+                                tag(tags, "mobile")
+                        )
+                );
+
+                lead.setInstagram(
+                        first(
+                                tag(
+                                        tags,
+                                        "instagram"
+                                ),
+                                tag(
+                                        tags,
+                                        "contact:instagram"
+                                )
+                        )
+                );
 
                 leads.add(lead);
             }
@@ -252,52 +310,34 @@ public class OverpassService {
         } catch (Exception e) {
 
             throw new RuntimeException(
-                    "Overpass JSON parsing failed: " +
+                    "Invalid Overpass response: " +
                             e.getMessage(),
                     e
             );
         }
     }
 
-    private List<Lead> removeDuplicates(
-            List<Lead> leads) {
-
-        List<Lead> result = new ArrayList<>();
-
-        java.util.Set<String> seen =
-                new java.util.HashSet<>();
-
-        for (Lead lead : leads) {
-
-            String key =
-                    (lead.getBusiness() + "|" +
-                            lead.getLocation())
-                            .toLowerCase()
-                            .trim();
-
-            if (seen.add(key)) {
-                result.add(lead);
-            }
-        }
-
-        return result;
-    }
-
-    private String getFilters(String industry) {
+    private String getFilter(
+            String industry) {
 
         String value =
-                industry.trim().toLowerCase();
+                industry
+                        .trim()
+                        .toLowerCase();
 
         return switch (value) {
 
             case "cafe", "cafes",
-                 "coffee shop", "coffee shops" ->
+                 "coffee shop",
+                 "coffee shops" ->
                     "[\"amenity\"=\"cafe\"]";
 
             case "restaurant", "restaurants" ->
                     "[\"amenity\"=\"restaurant\"]";
 
-            case "fast food", "fastfood", "fast_food" ->
+            case "fast food",
+                 "fastfood",
+                 "fast_food" ->
                     "[\"amenity\"=\"fast_food\"]";
 
             case "bar", "bars" ->
@@ -315,7 +355,8 @@ public class OverpassService {
             case "college", "colleges" ->
                     "[\"amenity\"=\"college\"]";
 
-            case "university", "universities" ->
+            case "university",
+                 "universities" ->
                     "[\"amenity\"=\"university\"]";
 
             case "hospital", "hospitals" ->
@@ -334,7 +375,6 @@ public class OverpassService {
                  "fitness",
                  "fitness center",
                  "fitness centre" ->
-
                     "[\"leisure\"=\"fitness_centre\"]";
 
             case "hotel", "hotels" ->
@@ -343,21 +383,19 @@ public class OverpassService {
             case "salon", "salons",
                  "hair salon",
                  "beauty salon" ->
-
                     "[\"shop\"=\"hairdresser\"]";
 
-            case "supermarket", "supermarkets" ->
+            case "supermarket",
+                 "supermarkets" ->
                     "[\"shop\"=\"supermarket\"]";
 
             case "clothing",
                  "clothes",
                  "clothing store" ->
-
                     "[\"shop\"=\"clothes\"]";
 
             case "electronics",
                  "electronics store" ->
-
                     "[\"shop\"=\"electronics\"]";
 
             case "bakery", "bakeries" ->
@@ -367,61 +405,41 @@ public class OverpassService {
                  "petrol pump",
                  "petrol pumps",
                  "gas station" ->
-
                     "[\"amenity\"=\"fuel\"]";
 
             case "car",
                  "car dealer",
                  "car dealers" ->
-
                     "[\"shop\"=\"car\"]";
 
             case "jewellery",
                  "jewelry",
                  "jewellery store" ->
-
                     "[\"shop\"=\"jewelry\"]";
 
             case "furniture",
                  "furniture store" ->
-
                     "[\"shop\"=\"furniture\"]";
 
             case "mobile",
                  "mobile shop",
                  "mobile stores" ->
-
                     "[\"shop\"=\"mobile_phone\"]";
 
             case "books",
                  "book store",
                  "bookstore" ->
-
                     "[\"shop\"=\"books\"]";
 
             case "pet",
                  "pet shop",
                  "pet store" ->
-
                     "[\"shop\"=\"pet\"]";
 
-            default -> {
-
-                String safe =
-                        Pattern
-                                .quote(
-                                        industry
-                                                .trim()
-                                                .replace(
-                                                        "\"",
-                                                        ""
-                                                )
-                                );
-
-                yield "[\"name\"~\"" +
-                        safe +
-                        "\",i]";
-            }
+            default ->
+                    "[\"name\"~\"" +
+                            escapeRegex(value) +
+                            "\",i]";
         };
     }
 
@@ -448,14 +466,11 @@ public class OverpassService {
                     "RubiumAI-LeadEngine/1.0"
             );
 
-            HttpEntity<Void> request =
-                    new HttpEntity<>(headers);
-
             ResponseEntity<String> response =
                     restTemplate.exchange(
                             url,
                             HttpMethod.GET,
-                            request,
+                            new HttpEntity<>(headers),
                             String.class
                     );
 
@@ -466,7 +481,7 @@ public class OverpassService {
                     body.isBlank()) {
 
                 throw new RuntimeException(
-                        "Nominatim returned empty response"
+                        "Empty Nominatim response"
                 );
             }
 
@@ -477,18 +492,21 @@ public class OverpassService {
                     result.isEmpty()) {
 
                 throw new RuntimeException(
-                        "City not found: " + city
+                        "City not found: " +
+                                city
                 );
             }
 
-            JsonNode location =
+            JsonNode first =
                     result.get(0);
 
             double latitude =
-                    location.path("lat").asDouble();
+                    first.path("lat")
+                            .asDouble();
 
             double longitude =
-                    location.path("lon").asDouble();
+                    first.path("lon")
+                            .asDouble();
 
             System.out.println(
                     "📍 " +
@@ -521,7 +539,8 @@ public class OverpassService {
             String key) {
 
         String value =
-                tags.path(key).asText(null);
+                tags.path(key)
+                        .asText(null);
 
         if (value == null ||
                 value.isBlank()) {
@@ -545,5 +564,41 @@ public class OverpassService {
         }
 
         return null;
+    }
+
+    private List<Lead> removeDuplicates(
+            List<Lead> leads) {
+
+        List<Lead> result =
+                new ArrayList<>();
+
+        Set<String> seen =
+                new HashSet<>();
+
+        for (Lead lead : leads) {
+
+            String key =
+                    lead.getBusiness()
+                            .trim()
+                            .toLowerCase() +
+                            "|" +
+                            lead.getLocation()
+                                    .trim()
+                                    .toLowerCase();
+
+            if (seen.add(key)) {
+                result.add(lead);
+            }
+        }
+
+        return result;
+    }
+
+    private String escapeRegex(
+            String value) {
+
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
     }
 }

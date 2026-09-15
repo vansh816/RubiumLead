@@ -8,7 +8,10 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class WebsiteDiscoveryService {
@@ -27,12 +30,22 @@ public class WebsiteDiscoveryService {
         this.mapper = mapper;
     }
 
-    public List<Lead> discoverWebsites(
-            List<Lead> leads,
-            String city) {
+    /*
+     * Main discovery method.
+     *
+     * Existing Overpass leads are preserved.
+     * Tavily adds additional businesses.
+     */
+    public List<Lead> discoverBusinesses(
+            List<Lead> existingLeads,
+            String city,
+            String industry) {
 
-        if (leads == null || leads.isEmpty()) {
-            return leads;
+        List<Lead> leads =
+                new ArrayList<>();
+
+        if (existingLeads != null) {
+            leads.addAll(existingLeads);
         }
 
         if (tavilyApiKey == null ||
@@ -40,160 +53,253 @@ public class WebsiteDiscoveryService {
                 tavilyApiKey.startsWith("YOUR_")) {
 
             System.out.println(
-                    "ℹ️ Tavily not configured. Skipping website discovery."
+                    "⚠️ TAVILY_API_KEY is not configured."
             );
 
             return leads;
         }
 
-        for (Lead lead : leads) {
+        try {
 
-            if (lead.getWebsite() != null &&
-                    !lead.getWebsite().isBlank()) {
+            List<Lead> tavilyLeads =
+                    searchBusinesses(
+                            city,
+                            industry
+                    );
 
-                continue;
-            }
+            leads.addAll(tavilyLeads);
+
+            return removeDuplicates(leads);
+
+        } catch (Exception e) {
+
+            System.out.println(
+                    "⚠️ Tavily discovery error: " +
+                            e.getMessage()
+            );
+
+            return removeDuplicates(leads);
+        }
+    }
+
+    private List<Lead> searchBusinesses(
+            String city,
+            String industry) {
+
+        List<Lead> leads =
+                new ArrayList<>();
+
+        /*
+         * Search several variations.
+         * This gives better coverage.
+         */
+        String[] queries = {
+
+                industry +
+                        " in " +
+                        city,
+
+                "best " +
+                        industry +
+                        " in " +
+                        city,
+
+                industry +
+                        " " +
+                        city +
+                        " official website"
+        };
+
+        for (String query : queries) {
 
             try {
 
-                String website =
-                        searchWebsite(
-                                lead.getBusiness(),
-                                city
+                List<Lead> results =
+                        searchTavily(
+                                query,
+                                city,
+                                industry
                         );
 
-                if (website != null &&
-                        !website.isBlank()) {
-
-                    lead.setWebsite(website);
-
-                    System.out.println(
-                            "🌐 Website found for " +
-                                    lead.getBusiness() +
-                                    " -> " +
-                                    website
-                    );
-                }
+                leads.addAll(results);
 
             } catch (Exception e) {
 
                 System.out.println(
-                        "⚠️ Website search failed for " +
-                                lead.getBusiness() +
-                                " -> " +
-                                e.getMessage()
+                        "⚠️ Search failed for: " +
+                                query
                 );
+            }
+        }
+
+        return removeDuplicates(leads);
+    }
+
+    private List<Lead> searchTavily(
+            String query,
+            String city,
+            String industry)
+            throws Exception {
+
+        List<Lead> leads =
+                new ArrayList<>();
+
+        String requestBody =
+                """
+                {
+                  "query": "%s",
+                  "max_results": 10,
+                  "search_depth": "basic",
+                  "include_answer": false
+                }
+                """.formatted(
+                        escapeJson(query)
+                );
+
+        HttpHeaders headers =
+                new HttpHeaders();
+
+        headers.setContentType(
+                MediaType.APPLICATION_JSON
+        );
+
+        headers.setBearerAuth(
+                tavilyApiKey
+        );
+
+        HttpEntity<String> request =
+                new HttpEntity<>(
+                        requestBody,
+                        headers
+                );
+
+        ResponseEntity<String> response =
+                restTemplate.postForEntity(
+                        "https://api.tavily.com/search",
+                        request,
+                        String.class
+                );
+
+        if (!response.getStatusCode()
+                .is2xxSuccessful()) {
+
+            throw new RuntimeException(
+                    "Tavily HTTP " +
+                            response.getStatusCode()
+                                    .value()
+            );
+        }
+
+        String body =
+                response.getBody();
+
+        if (body == null ||
+                body.isBlank()) {
+
+            return leads;
+        }
+
+        JsonNode root =
+                mapper.readTree(body);
+
+        JsonNode results =
+                root.path("results");
+
+        if (!results.isArray()) {
+            return leads;
+        }
+
+        for (JsonNode result : results) {
+
+            String title =
+                    result.path("title")
+                            .asText("");
+
+            String url =
+                    result.path("url")
+                            .asText("");
+
+            String content =
+                    result.path("content")
+                            .asText("");
+
+            if (!isUsefulResult(
+                    title,
+                    url,
+                    content
+            )) {
+                continue;
+            }
+
+            Lead lead =
+                    createLeadFromResult(
+                            title,
+                            url,
+                            content,
+                            city,
+                            industry
+                    );
+
+            if (lead != null) {
+                leads.add(lead);
             }
         }
 
         return leads;
     }
 
-    private String searchWebsite(
-            String business,
-            String city) {
+    private Lead createLeadFromResult(
+            String title,
+            String url,
+            String content,
+            String city,
+            String industry) {
 
-        try {
+        String business =
+                cleanBusinessName(title);
 
-            String query =
-                    business +
-                            " " +
-                            city +
-                            " official website";
-
-            String requestBody =
-                    """
-                    {
-                      "query": "%s",
-                      "max_results": 5,
-                      "search_depth": "basic"
-                    }
-                    """.formatted(
-                            escapeJson(query)
-                    );
-
-            HttpHeaders headers =
-                    new HttpHeaders();
-
-            headers.setContentType(
-                    MediaType.APPLICATION_JSON
-            );
-
-            headers.setBearerAuth(
-                    tavilyApiKey
-            );
-
-            HttpEntity<String> request =
-                    new HttpEntity<>(
-                            requestBody,
-                            headers
-                    );
-
-            ResponseEntity<String> response =
-                    restTemplate.postForEntity(
-                            "https://api.tavily.com/search",
-                            request,
-                            String.class
-                    );
-
-            if (!response.getStatusCode()
-                    .is2xxSuccessful()) {
-
-                System.out.println(
-                        "⚠️ Tavily HTTP status: " +
-                                response.getStatusCode().value()
-                );
-
-                return null;
-            }
-
-            String responseBody =
-                    response.getBody();
-
-            if (responseBody == null ||
-                    responseBody.isBlank()) {
-
-                return null;
-            }
-
-            // FIX:
-            // readTree() is now inside try-catch
-            JsonNode root =
-                    mapper.readTree(responseBody);
-
-            JsonNode results =
-                    root.path("results");
-
-            if (!results.isArray()) {
-                return null;
-            }
-
-            for (JsonNode result : results) {
-
-                String url =
-                        result.path("url")
-                                .asText("");
-
-                if (isValidBusinessWebsite(url)) {
-                    return url;
-                }
-            }
-
-            return null;
-
-        } catch (Exception e) {
-
-            System.out.println(
-                    "⚠️ Tavily search error: " +
-                            e.getMessage()
-            );
+        if (business == null ||
+                business.isBlank()) {
 
             return null;
         }
+
+        Lead lead =
+                new Lead();
+
+        lead.setBusiness(business);
+        lead.setCategory(
+                industry.trim().toLowerCase()
+        );
+        lead.setLocation(city);
+        lead.setWebsite(url);
+        lead.setSource("Tavily");
+
+        /*
+         * Try to extract phone/email
+         * from Tavily content.
+         */
+        String email =
+                extractEmail(content);
+
+        if (email != null) {
+            lead.setEmail(email);
+        }
+
+        String phone =
+                extractPhone(content);
+
+        if (phone != null) {
+            lead.setPhone(phone);
+        }
+
+        return lead;
     }
 
-    private boolean isValidBusinessWebsite(
-            String url) {
+    private boolean isUsefulResult(
+            String title,
+            String url,
+            String content) {
 
         if (url == null ||
                 url.isBlank()) {
@@ -204,6 +310,10 @@ public class WebsiteDiscoveryService {
         String value =
                 url.toLowerCase();
 
+        /*
+         * Do not create leads from
+         * directories/social/news sites.
+         */
         String[] blocked = {
 
                 "facebook.com",
@@ -247,6 +357,127 @@ public class WebsiteDiscoveryService {
 
         return value.startsWith("http://") ||
                 value.startsWith("https://");
+    }
+
+    private String cleanBusinessName(
+            String title) {
+
+        if (title == null ||
+                title.isBlank()) {
+
+            return null;
+        }
+
+        String result =
+                title.trim();
+
+        /*
+         * Remove common search-result
+         * suffixes.
+         */
+        String[] separators = {
+                " | ",
+                " - ",
+                " – ",
+                " — "
+        };
+
+        for (String separator :
+                separators) {
+
+            if (result.contains(separator)) {
+
+                result =
+                        result.split(
+                                java.util.regex.Pattern
+                                        .quote(separator)
+                        )[0];
+
+                break;
+            }
+        }
+
+        return result.trim();
+    }
+
+    private String extractEmail(
+            String text) {
+
+        if (text == null) {
+            return null;
+        }
+
+        java.util.regex.Pattern pattern =
+                java.util.regex.Pattern.compile(
+                        "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+                        java.util.regex.Pattern.CASE_INSENSITIVE
+                );
+
+        java.util.regex.Matcher matcher =
+                pattern.matcher(text);
+
+        if (matcher.find()) {
+            return matcher.group();
+        }
+
+        return null;
+    }
+
+    private String extractPhone(
+            String text) {
+
+        if (text == null) {
+            return null;
+        }
+
+        java.util.regex.Pattern pattern =
+                java.util.regex.Pattern.compile(
+                        "(?:\\+91[\\s-]?)?[6-9]\\d{9}"
+                );
+
+        java.util.regex.Matcher matcher =
+                pattern.matcher(text);
+
+        if (matcher.find()) {
+            return matcher.group();
+        }
+
+        return null;
+    }
+
+    private List<Lead> removeDuplicates(
+            List<Lead> leads) {
+
+        List<Lead> result =
+                new ArrayList<>();
+
+        Set<String> seen =
+                new HashSet<>();
+
+        for (Lead lead : leads) {
+
+            if (lead == null ||
+                    lead.getBusiness() == null) {
+                continue;
+            }
+
+            String key =
+                    lead.getBusiness()
+                            .trim()
+                            .toLowerCase() +
+                            "|" +
+                            (lead.getLocation() == null
+                                    ? ""
+                                    : lead.getLocation()
+                                    .trim()
+                                    .toLowerCase());
+
+            if (seen.add(key)) {
+                result.add(lead);
+            }
+        }
+
+        return result;
     }
 
     private String escapeJson(
