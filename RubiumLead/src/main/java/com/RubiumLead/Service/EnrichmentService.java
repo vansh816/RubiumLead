@@ -5,460 +5,314 @@ import com.RubiumLead.Entity.Priority;
 import com.RubiumLead.Entity.RecommendedOffer;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
+import java.time.LocalDateTime;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
 public class EnrichmentService {
 
-    private static final Pattern EMAIL =
+    private static final Pattern EMAIL_PATTERN =
             Pattern.compile(
                     "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
                     Pattern.CASE_INSENSITIVE
             );
 
-
-    private static final Pattern PHONE =
+    private static final Pattern PHONE_PATTERN =
             Pattern.compile(
                     "(?:\\+91[\\s-]?)?[6-9]\\d{9}"
             );
 
+    public List<Lead> enrich(List<Lead> input) {
 
-    public List<Lead> enrich(
-            List<Lead> leads) {
-
+        List<Lead> leads =
+                new ArrayList<>(input);
 
         for (Lead lead : leads) {
 
-            if (hasValue(
-                    lead.getWebsite()
-            )) {
+            try {
 
-                enrichWebsite(lead);
+                if (lead.getWebsite() != null &&
+                        !lead.getWebsite().isBlank()) {
 
-            } else {
+                    enrichWebsite(lead);
 
-                lead.setWebsiteScore(0);
+                } else {
 
-                lead.setBrandScore(
-                        hasValue(
-                                lead.getInstagram()
-                        )
-                                ? 60
-                                : 20
+                    lead.setWebsiteScore(0);
+
+                    lead.setBrandScore(
+                            lead.getInstagram() != null
+                                    ? 60
+                                    : 20
+                    );
+                }
+
+                scoreLead(lead);
+
+            } catch (Exception e) {
+
+                System.out.println(
+                        "⚠️ Enrichment failed for " +
+                                lead.getBusiness() +
+                                ": " +
+                                e.getMessage()
                 );
+
+                scoreLead(lead);
             }
 
-
-            scoreLead(lead);
+            lead.setLastChecked(
+                    LocalDateTime.now().toString()
+            );
         }
-
 
         return leads;
     }
 
-
     private void enrichWebsite(
             Lead lead) {
 
+        String website =
+                normalizeUrl(
+                        lead.getWebsite()
+                );
+
+        lead.setWebsite(website);
+
         try {
 
-            String url =
-                    lead.getWebsite();
-
-
-            if (!url.startsWith("http")) {
-
-                url =
-                        "https://" + url;
-            }
-
-
-            lead.setWebsite(url);
-
-
-            Document doc =
-                    Jsoup.connect(url)
+            Document document =
+                    Jsoup.connect(website)
                             .userAgent(
                                     "Mozilla/5.0 " +
-                                    "(Windows NT 10.0; Win64; x64) " +
-                                    "AppleWebKit/537.36 " +
-                                    "Chrome/120 Safari/537.36"
+                                            "RubiumAI Lead Engine"
                             )
                             .timeout(15000)
                             .followRedirects(true)
                             .get();
 
-
-            String html =
-                    doc.html();
-
-
-            // CONTACT EXTRACTION
-            extractContactDetails(
-                    lead,
-                    doc,
-                    html
+            extractContacts(
+                    document,
+                    lead
             );
 
-
-            // SCORING
             lead.setWebsiteScore(
-                    websiteScore(
-                            lead,
-                            doc,
-                            html
+                    calculateWebsiteScore(
+                            document,
+                            lead
                     )
             );
-
 
             lead.setBrandScore(
-                    brandScore(
-                            lead,
-                            doc
+                    calculateBrandScore(
+                            document,
+                            lead
                     )
             );
-
-
-            System.out.println(
-                    "✅ Enriched: "
-                            + lead.getBusiness()
-            );
-
 
         } catch (Exception e) {
 
-            System.out.println(
-                    "⚠️ Could not open website for "
-                            + lead.getBusiness()
-                            + ": "
-                            + e.getMessage()
-            );
-
-
-            /*
-             * Website exists but couldn't be
-             * scraped.
-             */
             lead.setWebsiteScore(25);
 
-
             lead.setBrandScore(
-                    hasValue(
-                            lead.getInstagram()
-                    )
+                    lead.getInstagram() != null
                             ? 60
                             : 20
             );
         }
     }
 
+    private void extractContacts(
+            Document document,
+            Lead lead) {
 
-    private void extractContactDetails(
-            Lead lead,
-            Document doc,
-            String html) {
+        String html =
+                document.html();
 
+        if (lead.getEmail() == null ||
+                lead.getEmail().isBlank()) {
 
-        // EMAIL
-        if (!hasValue(
-                lead.getEmail()
-        )) {
+            Matcher matcher =
+                    EMAIL_PATTERN.matcher(html);
 
-            String email =
-                    findEmail(html);
-
-
-            if (email != null) {
-
+            if (matcher.find()) {
                 lead.setEmail(
-                        cleanEmail(email)
+                        matcher.group()
                 );
             }
         }
 
+        if (lead.getPhone() == null ||
+                lead.getPhone().isBlank()) {
 
-        // PHONE
-        if (!hasValue(
-                lead.getPhone()
-        )) {
-
-            String phone =
-
-                    doc.select(
+            Elements phoneLinks =
+                    document.select(
                             "a[href^=tel:]"
-                    )
-                    .stream()
-                    .map(
-                            e ->
-                                    e.attr(
-                                            "href"
-                                    )
-                                    .replaceFirst(
-                                            "(?i)^tel:",
-                                            ""
-                                    )
-                                    .trim()
-                    )
-                    .filter(
-                            this::hasValue
-                    )
-                    .findFirst()
-                    .orElse(
-                            findPhone(html)
                     );
 
+            if (!phoneLinks.isEmpty()) {
 
-            if (phone != null) {
+                String phone =
+                        phoneLinks
+                                .first()
+                                .attr("href")
+                                .replace(
+                                        "tel:",
+                                        ""
+                                );
 
+                lead.setPhone(phone);
+            }
+        }
+
+        if (lead.getPhone() == null ||
+                lead.getPhone().isBlank()) {
+
+            Matcher matcher =
+                    PHONE_PATTERN.matcher(html);
+
+            if (matcher.find()) {
                 lead.setPhone(
-                        cleanPhone(phone)
+                        matcher.group()
                 );
             }
         }
 
+        if (lead.getInstagram() == null ||
+                lead.getInstagram().isBlank()) {
 
-        // INSTAGRAM
-        if (!hasValue(
-                lead.getInstagram()
-        )) {
-
-            String instagram =
-
-                    doc.select(
+            Elements links =
+                    document.select(
                             "a[href*=instagram.com]"
-                    )
-                    .stream()
-                    .map(
-                            e ->
-                                    e.attr(
-                                            "abs:href"
-                                    )
-                    )
-                    .filter(
-                            this::isInstagramUrl
-                    )
-                    .findFirst()
-                    .orElse(null);
+                    );
 
-
-            if (instagram != null) {
+            if (!links.isEmpty()) {
 
                 lead.setInstagram(
-                        instagram
+                        links.first().attr("href")
                 );
             }
         }
     }
 
-
-    private String findEmail(
-            String html) {
-
-        Matcher matcher =
-                EMAIL.matcher(html);
-
-
-        return matcher.find()
-                ? matcher.group()
-                : null;
-    }
-
-
-    private String findPhone(
-            String html) {
-
-        Matcher matcher =
-                PHONE.matcher(html);
-
-
-        return matcher.find()
-                ? matcher.group()
-                : null;
-    }
-
-
-    private String cleanEmail(
-            String email) {
-
-        if (email == null) {
-            return null;
-        }
-
-
-        return email
-                .replace(
-                        "mailto:",
-                        ""
-                )
-                .trim();
-    }
-
-
-    private String cleanPhone(
-            String phone) {
-
-        if (phone == null) {
-            return null;
-        }
-
-
-        return phone
-                .replaceAll(
-                        "[^0-9+]",
-                        ""
-                );
-    }
-
-
-    private boolean isInstagramUrl(
-            String url) {
-
-        return hasValue(url)
-                && url
-                .toLowerCase()
-                .contains(
-                        "instagram.com/"
-                );
-    }
-
-
-    private double websiteScore(
-            Lead lead,
-            Document doc,
-            String html) {
+    private double calculateWebsiteScore(
+            Document document,
+            Lead lead) {
 
         double score = 25;
 
-
-        if (!doc.title().isBlank()) {
+        if (!document.title().isBlank()) {
             score += 10;
         }
 
-
-        if (!doc.select(
+        if (document.select(
                 "meta[name=viewport]"
-        ).isEmpty()) {
-
+        ).size() > 0) {
             score += 15;
         }
 
-
-        if (!doc.select("h1").isEmpty()) {
+        if (document.select("h1").size() > 0) {
             score += 10;
         }
 
-
-        if (!doc.select("nav").isEmpty()) {
+        if (document.select("nav").size() > 0) {
             score += 10;
         }
 
-
-        if (!doc.select("img").isEmpty()) {
+        if (document.select("img").size() > 0) {
             score += 5;
         }
 
-
-        if (hasValue(
-                lead.getEmail()
-        )) {
-
+        if (lead.getEmail() != null &&
+                !lead.getEmail().isBlank()) {
             score += 10;
         }
 
-
-        if (hasValue(
-                lead.getPhone()
-        )) {
-
+        if (lead.getPhone() != null &&
+                !lead.getPhone().isBlank()) {
             score += 5;
         }
 
-
-        if (html.length() > 5000) {
+        if (document.html().length() > 5000) {
             score += 10;
         }
 
-
-        return clamp(score);
+        return Math.min(100, score);
     }
 
-
-    private double brandScore(
-            Lead lead,
-            Document doc) {
+    private double calculateBrandScore(
+            Document document,
+            Lead lead) {
 
         double score = 30;
 
-
-        if (hasValue(
-                lead.getInstagram()
-        )) {
+        if (lead.getInstagram() != null &&
+                !lead.getInstagram().isBlank()) {
 
             score += 30;
         }
 
-
-        if (!doc.select(
-                "img"
-        ).isEmpty()) {
-
+        if (document.select("img").size() > 0) {
             score += 15;
         }
 
+        for (Element img :
+                document.select("img")) {
 
-        if (!doc.select(
-                "img[alt*=logo i]"
-        ).isEmpty()) {
+            String alt =
+                    img.attr("alt");
 
-            score += 15;
+            if (alt.toLowerCase()
+                    .contains(
+                            lead.getBusiness()
+                                    .toLowerCase()
+                    )) {
+
+                score += 15;
+                break;
+            }
         }
 
+        String html =
+                document.html()
+                        .toLowerCase();
 
-        if (!doc.select(
-                "a[href*=facebook.com], " +
-                                "a[href*=linkedin.com]"
-        ).isEmpty()) {
+        if (html.contains("facebook.com") ||
+                html.contains("linkedin.com")) {
 
             score += 10;
         }
 
-
-        return clamp(score);
+        return Math.min(100, score);
     }
-
 
     private void scoreLead(
             Lead lead) {
 
         double score =
-
                 lead.getWebsiteScore() * 0.45
                         + lead.getBrandScore() * 0.25;
 
-
-        if (hasValue(
-                lead.getEmail()
-        )) {
+        if (lead.getEmail() != null &&
+                !lead.getEmail().isBlank()) {
 
             score += 10;
         }
 
-
-        if (hasValue(
-                lead.getInstagram()
-        )) {
+        if (lead.getInstagram() != null &&
+                !lead.getInstagram().isBlank()) {
 
             score += 10;
         }
 
-
-        if (!hasValue(
-                lead.getWebsite()
-        )) {
+        if (lead.getWebsite() == null ||
+                lead.getWebsite().isBlank()) {
 
             score += 8;
 
@@ -467,141 +321,108 @@ public class EnrichmentService {
             score += 5;
         }
 
-
         lead.setHfFitScore(
-                clamp(score)
+                Math.min(100, score)
         );
 
-
-        // NO WEBSITE
-        if (!hasValue(
-                lead.getWebsite()
-        )) {
+        if (lead.getWebsite() == null ||
+                lead.getWebsite().isBlank()) {
 
             lead.setRecommendedOffer(
-                    RecommendedOffer
-                            .BUSINESS_WEBSITE
+                    RecommendedOffer.BUSINESS_WEBSITE
             );
-
 
             lead.setProblemFound(
-                    "Business does not have a verified website."
+                    "Business does not have a detected website"
             );
-
 
             lead.setPitchAngle(
-                    "Offer a professional business website."
+                    "Offer a professional business website"
             );
 
-
-            lead.setPriority(
-                    score >= 50
-                            ? Priority.A_PITCH
-                            : Priority.B_REVIEW
-            );
-
-
-            return;
-        }
-
-
-        // BAD WEBSITE
-        if (lead.getWebsiteScore() < 65) {
+        } else if (
+                lead.getWebsiteScore() < 65) {
 
             lead.setRecommendedOffer(
-                    RecommendedOffer
-                            .WEBSITE_REFRESH
+                    RecommendedOffer.WEBSITE_REFRESH
             );
-
 
             lead.setProblemFound(
-                    "Website needs improvement."
+                    "Website quality can be improved"
             );
-
 
             lead.setPitchAngle(
-                    "Improve website UX and conversion."
+                    "Offer website redesign and performance improvements"
             );
 
-
-            lead.setPriority(
-                    score >= 55
-                            ? Priority.A_PITCH
-                            : Priority.B_REVIEW
-            );
-
-
-            return;
-        }
-
-
-        // BRAND
-        if (lead.getBrandScore() < 65) {
+        } else if (
+                lead.getBrandScore() < 65) {
 
             lead.setRecommendedOffer(
-                    RecommendedOffer
-                            .BRAND_WEBSITE
+                    RecommendedOffer.BRAND_WEBSITE
             );
-
 
             lead.setProblemFound(
-                    "Brand presence can be improved."
+                    "Brand presence can be improved"
             );
-
 
             lead.setPitchAngle(
-                    "Improve digital brand presence."
+                    "Offer stronger branding and digital presence"
             );
 
+        } else {
 
-            lead.setPriority(
-                    score >= 55
-                            ? Priority.A_PITCH
-                            : Priority.B_REVIEW
+            lead.setRecommendedOffer(
+                    RecommendedOffer.SKIP
             );
 
+            lead.setProblemFound(
+                    "No major issue detected"
+            );
 
-            return;
+            lead.setPitchAngle(
+                    "No immediate pitch"
+            );
         }
 
+        if (lead.getHfFitScore() >= 70) {
 
-        // GOOD LEAD
-        lead.setRecommendedOffer(
-                RecommendedOffer.SKIP
-        );
+            lead.setPriority(
+                    Priority.A_PITCH
+            );
 
+        } else if (
+                lead.getHfFitScore() >= 45) {
 
-        lead.setProblemFound(
-                "No strong opportunity found."
-        );
+            lead.setPriority(
+                    Priority.B_REVIEW
+            );
 
+        } else {
 
-        lead.setPitchAngle("");
-
-
-        lead.setPriority(
-                Priority.C_SKIP
-        );
+            lead.setPriority(
+                    Priority.C_SKIP
+            );
+        }
     }
 
+    private String normalizeUrl(
+            String url) {
 
-    private boolean hasValue(
-            String value) {
+        if (url == null ||
+                url.isBlank()) {
 
-        return value != null
-                && !value.isBlank();
-    }
+            return null;
+        }
 
+        url = url.trim();
 
-    private double clamp(
-            double value) {
+        if (!url.startsWith("http://") &&
+                !url.startsWith("https://")) {
 
-        return Math.max(
-                0,
-                Math.min(
-                        100,
-                        Math.round(value)
-                )
-        );
+            url = "https://" + url;
+        }
+
+        return url;
     }
 }

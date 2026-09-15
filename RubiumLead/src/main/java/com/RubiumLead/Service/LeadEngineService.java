@@ -1,15 +1,11 @@
 package com.RubiumLead.Service;
 
 import com.RubiumLead.Entity.Lead;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Collectors;
 
 @Service
 public class LeadEngineService {
@@ -17,14 +13,13 @@ public class LeadEngineService {
     private final OverpassService overpassService;
     private final WebsiteDiscoveryService websiteDiscoveryService;
     private final EnrichmentService enrichmentService;
-    private final ObjectMapper mapper;
-
+    private final NotionService notionService;
 
     public LeadEngineService(
             OverpassService overpassService,
             WebsiteDiscoveryService websiteDiscoveryService,
             EnrichmentService enrichmentService,
-            ObjectMapper mapper) {
+            NotionService notionService) {
 
         this.overpassService =
                 overpassService;
@@ -35,232 +30,84 @@ public class LeadEngineService {
         this.enrichmentService =
                 enrichmentService;
 
-        this.mapper =
-                mapper;
+        this.notionService =
+                notionService;
     }
-
 
     public List<Lead> run(
             String city,
             String industry) {
 
+        System.out.println("================================");
+        System.out.println("🚀 RUBIUM LEAD ENGINE");
+        System.out.println("City     : " + city);
+        System.out.println("Industry : " + industry);
+        System.out.println("================================");
 
-        // 1. DISCOVER
         List<Lead> leads =
                 overpassService.discover(
                         industry,
                         city
                 );
 
-
         System.out.println(
-                "🔎 Total discovered: "
-                        + leads.size()
+                "📦 Discovery result: " +
+                        leads.size()
         );
 
-
-        // 2. REMOVE DUPLICATES
-        leads =
-                removeDuplicates(leads);
-
-
-        System.out.println(
-                "🧹 After duplicate removal: "
-                        + leads.size()
-        );
-
-
-        // 3. TESTING LIMIT
-        // Keep 5 for testing.
-        // Remove this block when final.
-        leads =
-                new ArrayList<>(
-                        leads.stream()
-                                .limit(5)
-                                .toList()
-                );
-
-
-        // 4. WEBSITE DISCOVERY
-        for (Lead lead : leads) {
+        if (leads.isEmpty()) {
 
             System.out.println(
-                    "🔍 Processing: "
-                            + lead.getBusiness()
+                    "⚠️ No leads found."
             );
 
-
-            websiteDiscoveryService
-                    .discover(lead);
+            return new ArrayList<>();
         }
 
-
-        // 5. ENRICH
         leads =
-                enrichmentService.enrich(
-                        leads
-                );
+                websiteDiscoveryService
+                        .discoverWebsites(
+                                leads,
+                                city
+                        );
 
+        leads =
+                enrichmentService
+                        .enrich(leads);
 
-        // 6. SORT BY SCORE
-        leads.sort(
-                Comparator
-                        .comparingDouble(
-                                Lead::getHfFitScore
-                        )
-                        .reversed()
+        /*
+         * IMPORTANT:
+         * Always create mutable ArrayList.
+         * This avoids ImmutableCollections.uoe.
+         */
+        List<Lead> sortedLeads =
+                new ArrayList<>(leads);
+
+        sortedLeads.sort(
+                Comparator.comparingDouble(
+                        Lead::getHfFitScore
+                ).reversed()
         );
-
-
-        // 7. SAVE JSON
-        saveLeads(leads);
-
-
-        return leads;
-    }
-
-
-    private List<Lead> removeDuplicates(
-            List<Lead> leads) {
-
-
-        return new ArrayList<>(
-
-                leads.stream()
-
-                        .collect(
-                                Collectors.toMap(
-
-                                        lead ->
-                                                normalizeName(
-                                                        lead.getBusiness()
-                                                )
-                                                        + "|"
-                                                        + normalizeName(
-                                                        lead.getLocation()
-                                                ),
-
-                                        lead ->
-                                                lead,
-
-                                        (
-                                                first,
-                                                second
-                                        ) ->
-
-                                                dataCount(second)
-                                                        >
-                                                        dataCount(first)
-                                                        ? second
-                                                        : first
-                                )
-                        )
-
-                        .values()
-        );
-    }
-
-
-    private int dataCount(
-            Lead lead) {
-
-        int count = 0;
-
-
-        if (hasValue(
-                lead.getWebsite()
-        )) {
-
-            count++;
-        }
-
-
-        if (hasValue(
-                lead.getEmail()
-        )) {
-
-            count++;
-        }
-
-
-        if (hasValue(
-                lead.getPhone()
-        )) {
-
-            count++;
-        }
-
-
-        if (hasValue(
-                lead.getInstagram()
-        )) {
-
-            count++;
-        }
-
-
-        return count;
-    }
-
-
-    private String normalizeName(
-            String value) {
-
-        if (value == null) {
-            return "";
-        }
-
-
-        return value
-                .toLowerCase()
-                .replaceAll(
-                        "[^a-z0-9]",
-                        ""
-                );
-    }
-
-
-    private boolean hasValue(
-            String value) {
-
-        return value != null
-                && !value.isBlank();
-    }
-
-
-    private void saveLeads(
-            List<Lead> leads) {
 
         try {
 
-            Files.createDirectories(
-                    Path.of("data")
+            notionService.saveLeads(
+                    sortedLeads
             );
-
-
-            mapper
-                    .writerWithDefaultPrettyPrinter()
-                    .writeValue(
-                            Path.of(
-                                    "data/leads.json"
-                            ).toFile(),
-                            leads
-                    );
-
-
-            System.out.println(
-                    "💾 Saved "
-                            + leads.size()
-                            + " leads to data/leads.json"
-            );
-
 
         } catch (Exception e) {
 
-            throw new RuntimeException(
-                    "Failed to save leads",
-                    e
+            System.out.println(
+                    "⚠️ Notion sync failed: " +
+                            e.getMessage()
             );
         }
+
+        System.out.println(
+                "✅ FINAL LEADS: " +
+                        sortedLeads.size()
+        );
+
+        return sortedLeads;
     }
 }
