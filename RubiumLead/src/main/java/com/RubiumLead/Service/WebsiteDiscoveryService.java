@@ -31,9 +31,7 @@ public class WebsiteDiscoveryService {
             List<Lead> leads,
             String city) {
 
-        if (leads == null ||
-                leads.isEmpty()) {
-
+        if (leads == null || leads.isEmpty()) {
             return leads;
         }
 
@@ -42,8 +40,7 @@ public class WebsiteDiscoveryService {
                 tavilyApiKey.startsWith("YOUR_")) {
 
             System.out.println(
-                    "ℹ️ Tavily not configured. " +
-                            "Skipping website discovery."
+                    "ℹ️ Tavily not configured. Skipping website discovery."
             );
 
             return leads;
@@ -82,7 +79,9 @@ public class WebsiteDiscoveryService {
 
                 System.out.println(
                         "⚠️ Website search failed for " +
-                                lead.getBusiness()
+                                lead.getBusiness() +
+                                " -> " +
+                                e.getMessage()
                 );
             }
         }
@@ -94,77 +93,103 @@ public class WebsiteDiscoveryService {
             String business,
             String city) {
 
-        String query =
-                business +
-                        " " +
-                        city +
-                        " official website";
+        try {
 
-        String requestBody =
-                """
-                {
-                  "query": "%s",
-                  "max_results": 5,
-                  "search_depth": "basic"
-                }
-                """.formatted(
-                        escapeJson(query)
+            String query =
+                    business +
+                            " " +
+                            city +
+                            " official website";
+
+            String requestBody =
+                    """
+                    {
+                      "query": "%s",
+                      "max_results": 5,
+                      "search_depth": "basic"
+                    }
+                    """.formatted(
+                            escapeJson(query)
+                    );
+
+            HttpHeaders headers =
+                    new HttpHeaders();
+
+            headers.setContentType(
+                    MediaType.APPLICATION_JSON
+            );
+
+            headers.setBearerAuth(
+                    tavilyApiKey
+            );
+
+            HttpEntity<String> request =
+                    new HttpEntity<>(
+                            requestBody,
+                            headers
+                    );
+
+            ResponseEntity<String> response =
+                    restTemplate.postForEntity(
+                            "https://api.tavily.com/search",
+                            request,
+                            String.class
+                    );
+
+            if (!response.getStatusCode()
+                    .is2xxSuccessful()) {
+
+                System.out.println(
+                        "⚠️ Tavily HTTP status: " +
+                                response.getStatusCode().value()
                 );
 
-        HttpHeaders headers =
-                new HttpHeaders();
-
-        headers.setContentType(
-                MediaType.APPLICATION_JSON
-        );
-
-        headers.setBearerAuth(
-                tavilyApiKey
-        );
-
-        HttpEntity<String> request =
-                new HttpEntity<>(
-                        requestBody,
-                        headers
-                );
-
-        ResponseEntity<String> response =
-                restTemplate.postForEntity(
-                        "https://api.tavily.com/search",
-                        request,
-                        String.class
-                );
-
-        if (!response.getStatusCode()
-                .is2xxSuccessful()) {
-
-            return null;
-        }
-
-        JsonNode root =
-                mapper.readTree(
-                        response.getBody()
-                );
-
-        JsonNode results =
-                root.path("results");
-
-        if (!results.isArray()) {
-            return null;
-        }
-
-        for (JsonNode result : results) {
-
-            String url =
-                    result.path("url")
-                            .asText("");
-
-            if (isValidBusinessWebsite(url)) {
-                return url;
+                return null;
             }
-        }
 
-        return null;
+            String responseBody =
+                    response.getBody();
+
+            if (responseBody == null ||
+                    responseBody.isBlank()) {
+
+                return null;
+            }
+
+            // FIX:
+            // readTree() is now inside try-catch
+            JsonNode root =
+                    mapper.readTree(responseBody);
+
+            JsonNode results =
+                    root.path("results");
+
+            if (!results.isArray()) {
+                return null;
+            }
+
+            for (JsonNode result : results) {
+
+                String url =
+                        result.path("url")
+                                .asText("");
+
+                if (isValidBusinessWebsite(url)) {
+                    return url;
+                }
+            }
+
+            return null;
+
+        } catch (Exception e) {
+
+            System.out.println(
+                    "⚠️ Tavily search error: " +
+                            e.getMessage()
+            );
+
+            return null;
+        }
     }
 
     private boolean isValidBusinessWebsite(
@@ -180,6 +205,7 @@ public class WebsiteDiscoveryService {
                 url.toLowerCase();
 
         String[] blocked = {
+
                 "facebook.com",
                 "instagram.com",
                 "linkedin.com",
@@ -187,6 +213,7 @@ public class WebsiteDiscoveryService {
                 "twitter.com",
                 "x.com",
                 "tiktok.com",
+
                 "zomato.com",
                 "swiggy.com",
                 "eazydiner.com",
@@ -197,11 +224,18 @@ public class WebsiteDiscoveryService {
                 "nearbuy.com",
                 "sulekha.com",
                 "foursquare.com",
+
                 "google.com",
                 "google.co.in",
                 "bing.com",
+
                 "wikipedia.org",
-                "wikidata.org"
+                "wikidata.org",
+
+                "timesofindia.com",
+                "hindustantimes.com",
+                "indianexpress.com",
+                "ndtv.com"
         };
 
         for (String domain : blocked) {
